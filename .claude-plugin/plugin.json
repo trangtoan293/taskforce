@@ -1,6 +1,9 @@
 {
   "name": "taskforce",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Long-running multi-agent feature work with ledger, DoD gates and guards",
-  "author": { "name": "toantrang" }
+  "author": {
+    "name": "toantrang"
+  },
+  "types": "./types/index.d.ts"
 }

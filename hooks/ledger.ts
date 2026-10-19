@@ -1,22 +1,10 @@
 // Pure ledger logic: no `$`, no I/O. register.ts does the reading and writing.
 
-export type Status = 'pending' | 'building' | 'ready' | 'merged' | 'blocked'
+import type { Status, Task } from '../types'
+export type { Status, Task }
+
 const STATUSES: readonly Status[] = ['pending', 'building', 'ready', 'merged', 'blocked']
 
-export type Task = {
-  id: string
-  title: string
-  goal: string
-  accept: string[]
-  files?: string[]
-  deps?: string[]
-  status: Status
-  attempts: number
-  maxAttempts?: number
-  lastError?: string
-  notes?: string
-  branch?: string
-}
 export type Ledger = { tasks: Task[] }
 
 export type Config = {
