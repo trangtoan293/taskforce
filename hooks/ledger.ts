@@ -186,6 +186,14 @@ export function isProtectedPath(path: string, locked: string[]): boolean {
   return locked.some(g => globToRegex(g).test(path))
 }
 
+// Exactly `bash '<root>/scripts/tf-gate.sh|tf-merge.sh' '<arg>' ...` with every argument single-quoted
+// (embedded quotes as '\''): nothing outside the quotes can chain, redirect or substitute.
+export function isTrustedScriptCall(command: string, root: string): boolean {
+  const arg = `'(?:[^']|'\\\\'')*'`
+  const script = `'${escape(root)}/scripts/tf-(?:gate|merge)\\.sh'`
+  return new RegExp(`^bash ${script}(?: (?:${arg}|--))*$`).test(command.trim())
+}
+
 // ponytail: substring match on the command text; `${f}`-style spellings slip past.
 // The gate's git diff over locked paths is the authoritative check.
 export function bashTouchesProtected(command: string, locked: string[]): boolean {

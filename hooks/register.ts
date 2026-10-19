@@ -7,6 +7,7 @@ import {
   bashTouchesProtected,
   decideNext,
   isProtectedPath,
+  isTrustedScriptCall,
   newTask,
   parseConfig,
   parseLedger,
@@ -220,7 +221,8 @@ export const register: Register = on => {
     const path = WRITE_TOOLS.has(e.tool) ? String(e.file_path ?? e.notebook_path ?? '') : ''
     if (path && isProtectedPath(path, locked))
       return { deny: `taskforce: ${path} is protected (ledger, ${CONFIG_PATH} or a locked test). Use the tf tool for the ledger; locked tests are read-only.` }
-    if (e.tool === 'Bash' && bashTouchesProtected(String(e.command ?? ''), locked))
+    const command = String(e.command ?? '')
+    if (e.tool === 'Bash' && !isTrustedScriptCall(command, $.plugin.root) && bashTouchesProtected(command, locked))
       return { deny: 'taskforce: this command names a protected path (ledger, config or locked test). Read files with the Read tool; change the ledger with the tf tool.' }
     return next(e)
   }).catch(($, e, next) => (next.called ? next(e) : { deny: 'taskforce: guard failed; refusing to be safe.' }))

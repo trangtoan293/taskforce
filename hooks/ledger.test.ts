@@ -4,6 +4,7 @@ import {
   claim,
   decideNext,
   isProtectedPath,
+  isTrustedScriptCall,
   parseConfig,
   parseLedger,
   report,
@@ -130,6 +131,16 @@ describe('guard matching', () => {
     expect(isProtectedPath('/r/docs/spec.md', locked)).toBe(true)
     expect(isProtectedPath('/r/tests/test_other.py', locked)).toBe(false)
     expect(isProtectedPath('/r/src/taskforce.jsonx', locked)).toBe(false)
+  })
+
+  test('bash: the plugin own gate/merge script call is trusted, anything appended is not', () => {
+    const root = '/p/taskforce'
+    const gate = `bash '/p/taskforce/scripts/tf-gate.sh' '/r/.tf-worktrees/a' 'develop' 'tests/locked/**' -- 'test=it'\\''s ok'`
+    expect(isTrustedScriptCall(gate, root)).toBe(true)
+    expect(isTrustedScriptCall(`${gate}; rm tests/locked/x`, root)).toBe(false)
+    expect(isTrustedScriptCall(`${gate} && echo`, root)).toBe(false)
+    expect(isTrustedScriptCall(`bash '/elsewhere/scripts/tf-gate.sh' 'x'`, root)).toBe(false)
+    expect(isTrustedScriptCall(`bash '/p/taskforce/scripts/evil.sh' 'x'`, root)).toBe(false)
   })
 
   test('bash: flags commands naming protected paths, lets normal ones through', () => {
