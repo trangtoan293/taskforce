@@ -353,8 +353,12 @@ export const register: Register = on => {
       if (sub === 'run') {
         await loadConfig($)
         await saveLedger($, requeueBuilding(await loadLedger($)))
-        // Not awaited: a command.run hook may not wait on the turn it holds (P0 finding).
-        $.prompt.submit({ text: `/goal ${GOAL}`, asUser: true }).catch(err => $.ui.toast(`taskforce: could not start /goal: ${String(err)}`))
+        // A command.run hook may not run another command (it would wait on the turn it holds), and a
+        // queued $.prompt.submit did not start the goal in a live session; so start /goal from a timer
+        // that fires after this hook has returned.
+        $.clock.after(300, () =>
+          void $.command.run({ command: 'goal', args: GOAL }).catch(err => $.ui.toast(`taskforce: could not start /goal: ${String(err)}`)),
+        )
         return { text: 'taskforce: loop starting under /goal. /tf ui shows the dashboard; touch AGENT_STOP to halt everything.' }
       }
       if (sub === 'ui') {
