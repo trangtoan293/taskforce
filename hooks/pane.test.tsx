@@ -40,6 +40,6 @@ test('dashboard: overview shows progress and tokens; tab keys switch to tasks an
   expect((await ui.find({ text: /contradicts locked test/ }))?.text).toContain('⚠')
 
   await ui.press({ key: 'tab-flow' })
-  expect((await ui.find({ text: /Master gọi slave/ }))).toBeDefined()
+  expect((await ui.find({ text: /Master → slave/ }))).toBeDefined()
   expect((await ui.find({ text: /merged/ }))?.text).toContain('t1')
 })
