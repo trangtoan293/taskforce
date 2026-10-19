@@ -12,6 +12,7 @@ Talk to the user in their language (Vietnamese if they write Vietnamese). Keep u
 3. Repeat until done:
    - Call `tf` action `next`.
    - **TF-BUILD** → call the Workflow tool with the given `name` and `args`, exactly as given. Wait for it to finish (you will be notified). Then call `tf` action `report` with `results` = the array the workflow returned, unchanged.
+   - **TF-SOLO** → only one task is runnable, so do it yourself: follow its numbered steps exactly (worktree, change, commit, run the given gate command unedited, report). This saves the start-up cost of subagents; the gate still decides pass/fail.
    - **TF-MERGE** → run the given Bash command exactly as written (no edits, no pipes). Then call `tf` action `report` with `results` = the JSON array it printed.
    - **TF-DONE** → stop the loop.
    - Never edit the ledger or the config file yourself, never fix code yourself, never skip a gate.

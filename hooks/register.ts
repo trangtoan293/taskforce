@@ -163,6 +163,27 @@ const forWorkflow = (t: Task) => ({
 const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
 const gateSpecs = (cfg: Config) => Object.entries(cfg.gates).map(([n, c]) => sq(`${n}=${c}`)).join(' ')
 
+// Economy: a lone task is built by the master itself (no subagents, ~100k tokens of start-up saved);
+// it goes through the same worktree, the same gate script and the same merge as a delegated one.
+function soloText(t: Task, cfg: Config, repo: string, root: string): string {
+  const wt = `${repo}/${WORKTREE_DIR}/${t.id}`
+  const branch = `tf/${t.id}`
+  const gate = `bash ${sq(`${root}/scripts/tf-gate.sh`)} ${sq(wt)} ${sq(cfg.base)} ${cfg.locked.map(sq).join(' ')}${cfg.locked.length ? ' ' : ''}-- ${gateSpecs(cfg)}`
+  return [
+    `TF-SOLO: only ${t.id} is runnable, so do it yourself here (no subagents, no Workflow).`,
+    `1. Worktree: if ${wt} is missing, run git -C ${sq(repo)} worktree add ${WORKTREE_DIR}/${t.id} ${branch} when branch ${branch} exists, else git -C ${sq(repo)} worktree add ${WORKTREE_DIR}/${t.id} -b ${branch} ${cfg.base}. Then git -C ${sq(wt)} rebase ${cfg.base} (resolve conflicts keeping both sides).`,
+    `2. Task "${t.title}": ${t.goal}`,
+    `   Acceptance (each covered by a test or check): ${t.accept.map((a, i) => `(${i + 1}) ${a}`).join(' ')}`,
+    t.lastError ? `   The previous attempt failed with: ${t.lastError}` : '',
+    t.notes ? `   Notes: ${t.notes}` : '',
+    `   Edit only under ${wt}. Never touch locked paths (${cfg.locked.join(', ') || 'none'}), the ledger or the config. Commit everything on ${branch}.`,
+    `   If it cannot be done without breaking a locked test, report outcome "impossible" with the reason instead of working around it.`,
+    `3. Run exactly this one Bash command (do not edit or pipe it); it prints {"pass":...,"failures":[...]}:`,
+    gate,
+    `4. Call tf action "report" with results [{"id":"${t.id}","outcome":"pass" or "fail","branch":"${branch}","error":<failures joined, if any>,"notes":<one-line summary>}]. Then call tf action "next".`,
+  ].filter(Boolean).join('\n')
+}
+
 function buildText(tasks: Task[], cfg: Config, repo: string, root: string): string {
   const args = { repo, base: cfg.base, gates: cfg.gates, locked: cfg.locked, gateScript: `${root}/scripts/tf-gate.sh`, tasks: tasks.map(forWorkflow) }
   return [
@@ -235,8 +256,10 @@ async function runAction($: $, input: TfInput): Promise<string> {
       if (d.kind === 'merge') return mergeText(d.tasks, cfg, await repoRoot($), $.plugin.root)
       if (d.kind === 'build') {
         await saveLedger($, d.ledger)
-        await logMetric($, { event: 'claim', tasks: d.tasks.map(t => t.id) })
-        return buildText(d.tasks, cfg, await repoRoot($), $.plugin.root)
+        const solo = d.tasks.length === 1 && !(await isMaster($))
+        await logMetric($, { event: 'claim', tasks: d.tasks.map(t => t.id), ...(solo ? { role: 'master' } : {}) })
+        const repo = await repoRoot($)
+        return solo ? soloText(d.tasks[0], cfg, repo, $.plugin.root) : buildText(d.tasks, cfg, repo, $.plugin.root)
       }
       return doneText(l, d.blocked, d.stuck)
     }
@@ -278,7 +301,7 @@ async function runAction($: $, input: TfInput): Promise<string> {
 const TOOL_DESCRIPTION = `Taskforce ledger and loop driver for this repository. The only way to read or change .taskforce/tasks.json.
 Actions:
 - status: the task table.
-- next: what to do now. Returns TF-BUILD (run a workflow, then report), TF-MERGE (run a merge command, then report) or TF-DONE.
+- next: what to do now. Returns TF-SOLO (one task: do it yourself, run the gate command, report), TF-BUILD (several tasks: run a workflow, then report), TF-MERGE (run a merge command, then report) or TF-DONE.
 - report: apply results; "results" is an array of {id, outcome: pass|fail|impossible|merged|merge-fail, branch?, error?, notes?}.
 - add: add tasks; "tasks" is an array of {id, title, goal, accept: string[], files?: string[], deps?: string[]}.
 - stop: block one task ("id").

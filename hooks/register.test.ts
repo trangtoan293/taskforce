@@ -46,9 +46,10 @@ test('tf: add → next claims and hands over the workflow → report pass → ne
   const added = await $.tool.call(tf({ action: 'add', tasks: [{ id: 'a', title: 'A', goal: 'g', accept: ['x'] }] }))
   expect(String(added.result)).toContain('added 1')
 
-  const build = String((await $.tool.call(tf({ action: 'next' }))).result)
-  expect(build).toStartWith('TF-BUILD')
-  expect(build).toContain('taskforce:tf-run')
+  // one runnable task, master mode off → the master does it itself (no subagents), same gate script
+  const solo = String((await $.tool.call(tf({ action: 'next' }))).result)
+  expect(solo).toStartWith('TF-SOLO')
+  expect(solo).toContain("scripts/tf-gate.sh' '/repo/.tf-worktrees/a' 'develop' 'tests/locked/**' -- 'test=python -m unittest'")
   expect(JSON.parse(files['.taskforce/tasks.json']).tasks[0].status).toBe('building')
 
   await $.tool.call(tf({ action: 'report', results: [{ id: 'a', outcome: 'pass', branch: 'tf/a' }] }))
@@ -59,6 +60,20 @@ test('tf: add → next claims and hands over the workflow → report pass → ne
   await $.tool.call(tf({ action: 'report', results: [{ id: 'a', outcome: 'merged' }] }))
   expect(String((await $.tool.call(tf({ action: 'next' }))).result)).toStartWith('TF-DONE')
   expect(files['.taskforce/metrics.jsonl'].trim().split('\n')).toHaveLength(3)
+})
+
+test('tf next: two runnable tasks, or master mode, hand the work to subagents', async ($, on) => {
+  stage(on, { 'taskforce.json': CONFIG })
+  await $.tool.call(tf({ action: 'add', tasks: [{ id: 'a', title: 'A', goal: 'g', accept: ['x'] }, { id: 'b', title: 'B', goal: 'g', accept: ['x'] }] }))
+  expect(String((await $.tool.call(tf({ action: 'next' }))).result)).toStartWith('TF-BUILD')
+})
+
+test('tf next: master mode never goes solo', async ($, on) => {
+  stage(on, { 'taskforce.json': CONFIG, '.taskforce/mode': 'master\n' })
+  await $.tool.call(tf({ action: 'add', tasks: [{ id: 'a', title: 'A', goal: 'g', accept: ['x'] }] }))
+  const next = String((await $.tool.call(tf({ action: 'next' }))).result)
+  expect(next).toStartWith('TF-BUILD')
+  expect(next).toContain('taskforce:tf-run')
 })
 
 test('master mode: the main session may not write, a slave may; the system prompt says so', async ($, on) => {
