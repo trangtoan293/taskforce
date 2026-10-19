@@ -209,6 +209,24 @@ export function isReadOnlyCommand(command: string): boolean {
   })
 }
 
+// Orchestrator ("master") mode: the main session plans and delegates; slaves do the writing.
+export const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
+// ponytail: fixed allow-list of tools the master needs to explore and to land work; extend if a repo needs more.
+const MASTER_BASH = new Set(['git', 'agent-browser'])
+
+export function masterMayRun(tool: string, command: string, root: string): boolean {
+  if (WRITE_TOOLS.has(tool)) return false
+  if (tool !== 'Bash') return true
+  if (isTrustedScriptCall(command, root) || isReadOnlyCommand(command)) return true
+  if (/[>`]|\$\(/.test(command.replace(/\b2>&1\b/g, '').replace(/[12]?>\s*\/dev\/null/g, ''))) return false
+  return command.split(/\|\||&&|[|;]/).every(segment => {
+    const [head, sub] = segment.trim().split(/\s+/)
+    if (!head) return true
+    if (head === 'git') return sub !== 'push'
+    return MASTER_BASH.has(head) || isReadOnlyCommand(segment)
+  })
+}
+
 // ponytail: substring match on the command text; `${f}`-style spellings slip past.
 // The gate's git diff over locked paths is the authoritative check.
 export function bashTouchesProtected(command: string, locked: string[]): boolean {

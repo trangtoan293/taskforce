@@ -16,6 +16,7 @@ type Props = {
   rows: number
   setTab: (t: Tab) => void
   setPaused: (paused: boolean) => void
+  setMaster: (master: boolean) => void
   retryBlocked: () => void
 }
 
@@ -79,6 +80,7 @@ export function renderPane({ Box, Text, Button }: Elements, p: Props) {
     <Box borderStyle="round" borderColor="claude" paddingX={1} justifyContent="space-between">
       <Text><Text bold color="claude">◆ TASKFORCE</Text> <Text dimColor>│</Text> {repoName}</Text>
       <Text>
+        {board.masterMode ? <Text bold inverse color="claude"> ◆ MASTER MODE </Text> : null}{board.masterMode ? ' ' : ''}
         {board.killSwitch ? <Text bold color="error">⛔ DỪNG </Text> : <Text color="success">● chạy </Text>}
         <Text dimColor>│ </Text><Text bold>{pct}%</Text> <Text color="success">{bar(pct, 14)}</Text>
         <Text dimColor> │ </Text>{t.running} agent<Text dimColor> │ </Text>{fmtTok(t.tokensIn + t.tokensOut)} tok
@@ -97,7 +99,7 @@ export function renderPane({ Box, Text, Button }: Elements, p: Props) {
   )
 
   const footer = (
-    <Text dimColor>  phím 1–5 chuyển tab · X tạm dừng · C tiếp tục · T chạy lại task blocked · /tf help xem hướng dẫn</Text>
+    <Text dimColor>  phím 1–5 chuyển tab · M chế độ điều phối · X tạm dừng · C tiếp tục · T chạy lại task blocked · /tf help xem hướng dẫn</Text>
   )
 
   // The one thing to do now, always on top.
@@ -127,6 +129,9 @@ export function renderPane({ Box, Text, Button }: Elements, p: Props) {
       {board.paused
         ? <Button key="act-resume" hotkey="c" onPress={() => p.setPaused(false)}><Text bold color="success">[C] Tiếp tục</Text></Button>
         : <Button key="act-pause" hotkey="x" onPress={() => p.setPaused(true)}><Text color="warning">[X] Tạm dừng tất cả</Text></Button>}
+      {board.masterMode
+        ? <Button key="act-master-off" hotkey="m" onPress={() => p.setMaster(false)}><Text color="claude">[M] Tắt chế độ điều phối</Text></Button>
+        : <Button key="act-master-on" hotkey="m" onPress={() => p.setMaster(true)}><Text dimColor>[M] Bật chế độ điều phối</Text></Button>}
       {blockedCount
         ? <Button key="act-retry" hotkey="t" onPress={() => p.retryBlocked()}><Text color="error">[T] Chạy lại {blockedCount} task blocked</Text></Button>
         : null}
@@ -185,6 +190,7 @@ export function renderPane({ Box, Text, Button }: Elements, p: Props) {
           ), '55%')}
           {card('Khi cần dừng', 'warning', (
             <Box flexDirection="column">
+              <Text><Text bold>/tf master on</Text> <Text dimColor>master chỉ điều phối, slave làm</Text></Text>
               <Text><Text bold>/tf pause</Text> <Text dimColor>chặn mọi agent ngay</Text></Text>
               <Text><Text bold>/tf resume</Text> <Text dimColor>cho chạy tiếp</Text></Text>
               <Text><Text bold>/tf stop &lt;id&gt;</Text> <Text dimColor>bỏ 1 task</Text></Text>

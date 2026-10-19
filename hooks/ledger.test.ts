@@ -6,6 +6,7 @@ import {
   isProtectedPath,
   isReadOnlyCommand,
   isTrustedScriptCall,
+  masterMayRun,
   parseConfig,
   parseLedger,
   report,
@@ -157,6 +158,16 @@ describe('guard matching', () => {
     for (const c of ro) expect(isReadOnlyCommand(c)).toBe(true)
     const rw = ['echo x > taskforce.json', 'sed -i s/a/b/ tests/locked/x.py', 'cat a | tee .taskforce/tasks.json', 'python3 fix.py taskforce.json', 'cp x tests/locked/y', 'git checkout -- tests/locked', 'find tests/locked -delete', 'cat $(echo taskforce.json)', 'rm .taskforce/tasks.json']
     for (const c of rw) expect(isReadOnlyCommand(c)).toBe(false)
+  })
+
+  test('master mode: the master may read, explore, use git and run the plugin scripts, but not write', () => {
+    const root = '/p/taskforce'
+    for (const tool of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) expect(masterMayRun(tool, '', root)).toBe(false)
+    for (const tool of ['Read', 'Grep', 'Glob', 'Workflow', 'mcp__taskforce__tf', 'WebFetch']) expect(masterMayRun(tool, '', root)).toBe(true)
+    const ok = ['grep -rn foo src', 'git commit -m x', 'git checkout -b develop', 'agent-browser --session-name s open https://x', `bash '/p/taskforce/scripts/tf-merge.sh' '/r' 'develop' 'a:tf/a' -- 'test=make'`]
+    for (const c of ok) expect(masterMayRun('Bash', c, root)).toBe(true)
+    const no = ['echo x > src/a.py', 'sed -i s/a/b/ src/a.py', 'python3 gen.py', 'npm install left-pad', 'rm -r demo/data', 'git push origin main']
+    for (const c of no) expect(masterMayRun('Bash', c, root)).toBe(false)
   })
 
   test('bash: flags commands naming protected paths, lets normal ones through', () => {

@@ -59,6 +59,7 @@ export type Board = {
   hasConfig: boolean
   hasLedger: boolean
   paused: boolean
+  masterMode: boolean
   repo: string
   tasks: Task[]
   events: MetricRow[]

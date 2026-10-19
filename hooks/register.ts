@@ -14,7 +14,9 @@ import {
   isProtectedPath,
   isReadOnlyCommand,
   isTrustedScriptCall,
+  masterMayRun,
   newTask,
+  WRITE_TOOLS,
   parseConfig,
   parseLedger,
   report,
@@ -38,13 +40,21 @@ const STOP_FILE = 'AGENT_STOP'
 const METRICS = `${LEDGER_DIR}/metrics.jsonl`
 const PANE = 'taskforce'
 const PAUSE_FILE = `${LEDGER_DIR}/paused`
+const MODE_FILE = `${LEDGER_DIR}/mode`
+const MASTER_DENY =
+  'taskforce: đang ở CHẾ ĐỘ ĐIỀU PHỐI — phiên chính chỉ đọc, khám phá và lên kế hoạch, không tự sửa file. ' +
+  'Hãy chia việc bằng /taskforce:plan rồi giao cho slave bằng /taskforce:run. (Tắt chế độ này: /tf master off)'
+const MASTER_RULES = `# Taskforce orchestrator mode
+This applies to the main session only. If you are a subagent that a workflow gave a task, ignore this section.
+The person turned on orchestrator mode for this repository: you are the master. You read, explore, query, ask questions and plan; you never edit files or run commands that change the repo yourself (the taskforce guard refuses them).
+When the person asks for work that changes the repo, turn it into tasks: follow the taskforce:plan skill (propose tasks, get approval, tf action "add"), then the taskforce:run skill, which hands each task to builder and gate subagents.
+Answer questions and do read-only exploration directly; delegate only the work that writes.`
 const POLL_MS = 3000
-const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
 
 
 // ---------- state the dashboard reads ----------
 
-const EMPTY: Board = { hasConfig: false, hasLedger: false, paused: false, repo: '', tasks: [], events: [], killSwitch: false }
+const EMPTY: Board = { hasConfig: false, hasLedger: false, paused: false, masterMode: false, repo: '', tasks: [], events: [], killSwitch: false }
 const agentsAtom = atom({ plugin: 'taskforce', key: 'agents' } as const, [] as AgentRec[])
 const boardAtom = atom({ plugin: 'taskforce', key: 'board' } as const, EMPTY)
 const tabAtom = atom({ plugin: 'taskforce', key: 'tab' } as const, 'overview' as Tab)
@@ -85,7 +95,9 @@ const repoRoot = async ($: $) => (await $.fs.stat('.', { resolve: true })).realP
 
 // ponytail: pause is a file holding yes/no because $.fs cannot delete; AGENT_STOP stays the hard stop.
 const isPaused = async ($: $) => (await $.fs.exists(PAUSE_FILE)) && (await readText($, PAUSE_FILE)).trim() === 'yes'
-const setPaused = ($: $, on: boolean) => $.fs.write(PAUSE_FILE, on ? 'yes\n' : 'no\n')
+const setPaused = ($: $, value: boolean) => $.fs.write(PAUSE_FILE, value ? 'yes\n' : 'no\n')
+const isMaster = async ($: $) => (await $.fs.exists(MODE_FILE)) && (await readText($, MODE_FILE)).trim() === 'master'
+const setMaster = ($: $, value: boolean) => $.fs.write(MODE_FILE, value ? 'master\n' : 'normal\n')
 
 async function retryBlocked($: $, id?: string): Promise<string> {
   let l = await loadLedger($)
@@ -107,7 +119,7 @@ async function showStatus($: $) {
   const t = totals(agents)
   const merged = board.tasks.filter(x => x.status === 'merged').length
   const stopNote = board.killSwitch ? ' · ⛔ AGENT_STOP' : ''
-  $.ui.status(`tf ${pct}% · ${merged}/${board.tasks.length} xong · ${blocked} blocked · ${t.running} agent · ${fmtTok(t.tokensIn + t.tokensOut)} tok${stopNote}`)
+  $.ui.status(`${board.masterMode ? '◆ MASTER · ' : ''}tf ${pct}% · ${merged}/${board.tasks.length} xong · ${blocked} blocked · ${t.running} agent · ${fmtTok(t.tokensIn + t.tokensOut)} tok${stopNote}`)
 }
 
 // Re-reads ledger and metrics; writes the atom only on change, so the pane redraws only then.
@@ -115,10 +127,11 @@ async function refreshBoard($: $) {
   const killSwitch = await $.fs.exists(STOP_FILE)
   const hasConfig = await $.fs.exists(CONFIG_PATH)
   const paused = await isPaused($)
+  const masterMode = await isMaster($)
   const repo = await repoRoot($)
   const next: Board = (await $.fs.exists(LEDGER_PATH))
-    ? { hasConfig, hasLedger: true, paused, repo, tasks: (await loadLedger($)).tasks, events: (await loadMetrics($)).slice(-300), killSwitch }
-    : { ...EMPTY, hasConfig, paused, repo, killSwitch }
+    ? { hasConfig, hasLedger: true, paused, masterMode, repo, tasks: (await loadLedger($)).tasks, events: (await loadMetrics($)).slice(-300), killSwitch }
+    : { ...EMPTY, hasConfig, paused, masterMode, repo, killSwitch }
   if (JSON.stringify(await read($, boardAtom)) !== JSON.stringify(next)) await update($, boardAtom, () => next)
   await showStatus($)
 }
@@ -283,11 +296,14 @@ export const register: Register = on => {
       return { deny: `taskforce: kill switch engaged (${STOP_FILE} exists). A human removes it to resume.` }
     if (e.tool === TOOL_FULL) return next(e)
     if (await isPaused($)) return { deny: 'taskforce: đang tạm dừng (/tf resume để tiếp tục).' }
+    const command = String(e.command ?? '')
+    // Master mode binds the main loop only (no agentId); slaves keep their normal tools.
+    if (!e.agentId && (await isMaster($)) && !masterMayRun(e.tool, command, $.plugin.root))
+      return { deny: MASTER_DENY }
     const locked = await loadConfig($).then(c => c.locked, () => [] as string[])
     const path = WRITE_TOOLS.has(e.tool) ? String(e.file_path ?? e.notebook_path ?? '') : ''
     if (path && isProtectedPath(path, locked))
       return { deny: `taskforce: ${path} is protected (ledger, ${CONFIG_PATH} or a locked test). Use the tf tool for the ledger; locked tests are read-only.` }
-    const command = String(e.command ?? '')
     if (e.tool === 'Bash' && !isTrustedScriptCall(command, $.plugin.root) && !isReadOnlyCommand(command) && bashTouchesProtected(command, locked))
       return { deny: 'taskforce: this command names a protected path (ledger, config or locked test). Read files with the Read tool; change the ledger with the tf tool.' }
     return next(e)
@@ -339,8 +355,16 @@ export const register: Register = on => {
       rows: e.viewport?.rows ?? 30,
       setTab: (t: Tab) => void update($, tabAtom, () => t),
       setPaused: (paused: boolean) => void setPaused($, paused).then(() => refreshBoard($)),
+      setMaster: (master: boolean) => void setMaster($, master).then(() => refreshBoard($)),
       retryBlocked: () => void retryBlocked($).then(text => $.ui.toast(text)).then(() => refreshBoard($)),
     })
+  })
+
+  // In master mode the main session is told it orchestrates; the guard above enforces it.
+  on('prompt.compose', async ($, e, next) => {
+    const r = await next(e)
+    if (!(await isMaster($).catch(() => false))) return r
+    return { sections: [...r.sections, { id: 'taskforce:master', text: MASTER_RULES, scope: 'session' as const }] }
   })
 
   on('session.start', async ($, e, next) => {
@@ -361,7 +385,7 @@ export const register: Register = on => {
         required: ['action'],
       },
     })
-    await $.command.register({ name: 'tf', description: 'taskforce: mở dashboard (help · status · pause · resume · retry <id> · stop <id>)', argumentHint: 'help | status | pause | resume | retry <id> | stop <id>' })
+    await $.command.register({ name: 'tf', description: 'taskforce: mở dashboard (help · status · master on|off · pause · resume · retry <id> · stop <id>)', argumentHint: 'help | status | master on|off | pause | resume | retry <id> | stop <id>' })
     await refreshBoard($).catch(() => undefined)
     // ponytail: fixed 3s poll of two small files; switch to a file watch if one becomes available.
     $.clock.every(POLL_MS, () => void refreshBoard($).catch(() => undefined))
@@ -385,6 +409,17 @@ export const register: Register = on => {
           await setPaused($, true)
           await refreshBoard($)
           return { text: 'taskforce: ĐÃ TẠM DỪNG. Mọi agent bị chặn ở lần gọi tool kế tiếp. /tf resume để tiếp tục.' }
+        case 'master': {
+          if (!(await $.fs.exists(CONFIG_PATH))) return { text: 'taskforce: repo này chưa cài. Chạy /taskforce:setup trước.' }
+          const turnOn = id === 'on' ? true : id === 'off' ? false : !(await isMaster($))
+          await setMaster($, turnOn)
+          await refreshBoard($)
+          return {
+            text: turnOn
+              ? 'taskforce: ĐÃ BẬT chế độ điều phối. Phiên chính chỉ đọc và lên kế hoạch; mọi việc sửa repo phải đi qua /taskforce:plan → /taskforce:run (slave làm). Tắt: /tf master off'
+              : 'taskforce: đã tắt chế độ điều phối. Phiên chính làm việc bình thường.',
+          }
+        }
         case 'resume':
           await setPaused($, false)
           await refreshBoard($)
@@ -397,7 +432,7 @@ export const register: Register = on => {
         case 'run':
           return { text: 'taskforce: gõ /taskforce:run để chạy (Claude làm hết các task đang chờ).' }
         default:
-          return { text: 'Các lệnh: /tf (dashboard) · /tf help · /tf status · /tf pause · /tf resume · /tf retry <id|all> · /tf stop <id>\nCác bước: /taskforce:setup → /taskforce:plan <mô tả> → /taskforce:run' }
+          return { text: 'Các lệnh: /tf (dashboard) · /tf help · /tf status · /tf master on|off · /tf pause · /tf resume · /tf retry <id|all> · /tf stop <id>\nCác bước: /taskforce:setup → /taskforce:plan <mô tả> → /taskforce:run' }
       }
     } catch (err) {
       return { text: `taskforce: ${String(err instanceof Error ? err.message : err)}` }

@@ -61,6 +61,16 @@ test('tf: add → next claims and hands over the workflow → report pass → ne
   expect(files['.taskforce/metrics.jsonl'].trim().split('\n')).toHaveLength(3)
 })
 
+test('master mode: the main session may not write, a slave may; the system prompt says so', async ($, on) => {
+  stage(on, { 'taskforce.json': CONFIG, '.taskforce/mode': 'master\n' })
+  on('prompt.compose', async () => ({ sections: [{ id: 'intro', text: 'engine', scope: 'shared' as const }] }))
+  expect((await $.tool.call({ tool: 'Write', file_path: '/repo/src/a.py', content: 'x' })).deny).toContain('CHẾ ĐỘ ĐIỀU PHỐI')
+  expect((await $.tool.call({ tool: 'Bash', command: 'git commit -m x' })).result).toBe('ran')
+  expect((await $.tool.call({ tool: 'Write', file_path: '/repo/src/a.py', content: 'x', agentId: 'slave-1' })).result).toBe('ran')
+  const composed = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['terminal'], tools: [], outputStyle: { name: 'default', isKeepingCodingInstructions: true }, traits: [] })
+  expect(composed.sections.map(s => s.id)).toContain('taskforce:master')
+})
+
 test('tf: errors come back as a refusal the model can read', async ($, on) => {
   stage(on, {})
   expect((await $.tool.call(tf({ action: 'next' }))).deny).toContain('run tf action "init"')

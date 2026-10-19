@@ -4,7 +4,7 @@ import { nextStep } from './guide'
 
 const task = (id: string, status: Task['status']): Task => ({ id, title: id, goal: 'g', accept: ['a'], status, attempts: 0 })
 const board = (over: Partial<Board> = {}): Board => ({
-  hasConfig: true, hasLedger: true, paused: false, repo: '/r', tasks: [], events: [], killSwitch: false, ...over,
+  hasConfig: true, hasLedger: true, paused: false, masterMode: false, repo: '/r', tasks: [], events: [], killSwitch: false, ...over,
 })
 const live: AgentRec = { id: 'x', parent: 'main', label: 'build:a', role: 'builder', taskId: 'a', status: 'running', tools: 0, tokensIn: 0, tokensOut: 0, cacheRead: 0, startedAt: 0 }
 
