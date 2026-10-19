@@ -36,10 +36,18 @@ test('dashboard: overview shows progress and tokens; tab keys switch to tasks an
   expect((await ui.find({ text: /Tiến độ chung/ }))?.text).toContain('50%')
   expect((await ui.find({ text: /tích luỹ/ }))?.text).toContain('1.5k')
 
+  // the guide says what to do next: one task pending → step 3, run it
+  expect((await ui.find({ text: /BƯỚC TIẾP THEO/ }))?.text).toContain('chờ chạy')
+  expect((await ui.find({ text: /taskforce:run/ }))).toBeDefined()
+
   await ui.press({ key: 'tab-tasks' })
   expect((await ui.find({ text: /contradicts locked test/ }))?.text).toContain('⚠')
 
   await ui.press({ key: 'tab-flow' })
   expect((await ui.find({ text: /Master → slave/ }))).toBeDefined()
   expect((await ui.find({ text: /merged/ }))?.text).toContain('t1')
+
+  // the retry button puts the blocked task back in the queue
+  await ui.press({ key: 'act-retry' })
+  expect(JSON.parse(files['.taskforce/tasks.json']).tasks.find((t: { id: string }) => t.id === 't4').status).toBe('pending')
 })

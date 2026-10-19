@@ -12,12 +12,14 @@ import {
   bashTouchesProtected,
   decideNext,
   isProtectedPath,
+  isReadOnlyCommand,
   isTrustedScriptCall,
   newTask,
   parseConfig,
   parseLedger,
   report,
   requeueBuilding,
+  retry,
   stop,
   type Config,
   type Ledger,
@@ -35,20 +37,14 @@ const WORKFLOW = 'taskforce:tf-run'
 const STOP_FILE = 'AGENT_STOP'
 const METRICS = `${LEDGER_DIR}/metrics.jsonl`
 const PANE = 'taskforce'
+const PAUSE_FILE = `${LEDGER_DIR}/paused`
 const POLL_MS = 3000
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
 
-const GOAL = [
-  'Taskforce loop for this repository. Repeatedly call the tf tool (mcp__taskforce__tf) with action "next"',
-  'and do exactly what it returns: TF-BUILD means run the named workflow with the given args and then call tf',
-  'action "report" with the workflow\'s returned array as "results"; TF-MERGE means run the given command and',
-  'report its output. Never edit the ledger or the config file yourself.',
-  'The goal is met when a tf "next" call in this conversation returns a line starting with TF-DONE.',
-].join(' ')
 
 // ---------- state the dashboard reads ----------
 
-const EMPTY: Board = { hasLedger: false, repo: '', tasks: [], events: [], killSwitch: false }
+const EMPTY: Board = { hasConfig: false, hasLedger: false, paused: false, repo: '', tasks: [], events: [], killSwitch: false }
 const agentsAtom = atom({ plugin: 'taskforce', key: 'agents' } as const, [] as AgentRec[])
 const boardAtom = atom({ plugin: 'taskforce', key: 'board' } as const, EMPTY)
 const tabAtom = atom({ plugin: 'taskforce', key: 'tab' } as const, 'overview' as Tab)
@@ -87,6 +83,20 @@ async function loadMetrics($: $): Promise<MetricRow[]> {
 
 const repoRoot = async ($: $) => (await $.fs.stat('.', { resolve: true })).realPath ?? '.'
 
+// ponytail: pause is a file holding yes/no because $.fs cannot delete; AGENT_STOP stays the hard stop.
+const isPaused = async ($: $) => (await $.fs.exists(PAUSE_FILE)) && (await readText($, PAUSE_FILE)).trim() === 'yes'
+const setPaused = ($: $, on: boolean) => $.fs.write(PAUSE_FILE, on ? 'yes\n' : 'no\n')
+
+async function retryBlocked($: $, id?: string): Promise<string> {
+  let l = await loadLedger($)
+  const ids = id && id !== 'all' ? [id] : l.tasks.filter(t => t.status === 'blocked').map(t => t.id)
+  if (!ids.length) return 'taskforce: không có task nào đang blocked.'
+  for (const x of ids) l = retry(l, x)
+  await saveLedger($, l)
+  await logMetric($, { event: 'retry', tasks: ids })
+  return `taskforce: ${ids.join(', ')} quay lại hàng chờ với 3 lượt thử mới. Gõ /taskforce:run để chạy.`
+}
+
 // ---------- dashboard ----------
 
 async function showStatus($: $) {
@@ -103,9 +113,12 @@ async function showStatus($: $) {
 // Re-reads ledger and metrics; writes the atom only on change, so the pane redraws only then.
 async function refreshBoard($: $) {
   const killSwitch = await $.fs.exists(STOP_FILE)
+  const hasConfig = await $.fs.exists(CONFIG_PATH)
+  const paused = await isPaused($)
+  const repo = await repoRoot($)
   const next: Board = (await $.fs.exists(LEDGER_PATH))
-    ? { hasLedger: true, repo: await repoRoot($), tasks: (await loadLedger($)).tasks, events: (await loadMetrics($)).slice(-300), killSwitch }
-    : { ...EMPTY, killSwitch }
+    ? { hasConfig, hasLedger: true, paused, repo, tasks: (await loadLedger($)).tasks, events: (await loadMetrics($)).slice(-300), killSwitch }
+    : { ...EMPTY, hasConfig, paused, repo, killSwitch }
   if (JSON.stringify(await read($, boardAtom)) !== JSON.stringify(next)) await update($, boardAtom, () => next)
   await showStatus($)
 }
@@ -232,6 +245,12 @@ async function runAction($: $, input: TfInput): Promise<string> {
       return `${statusText(l)}${warn}\n\nNow call tf action "next".`
     }
 
+    case 'requeue': {
+      const l = requeueBuilding(await loadLedger($))
+      await saveLedger($, l)
+      return statusText(l)
+    }
+
     case 'stop': {
       const l = stop(await loadLedger($), String(input.id))
       await saveLedger($, l)
@@ -250,6 +269,7 @@ Actions:
 - report: apply results; "results" is an array of {id, outcome: pass|fail|impossible|merged|merge-fail, branch?, error?, notes?}.
 - add: add tasks; "tasks" is an array of {id, title, goal, accept: string[], files?: string[], deps?: string[]}.
 - stop: block one task ("id").
+- requeue: put tasks left "building" by a run that died back in the queue (call once before a new run).
 - init: write taskforce.json once from "config" {base?, gates: {name: command}, locked?: glob[], maxParallel?}.`
 
 // ---------- wiring ----------
@@ -262,12 +282,13 @@ export const register: Register = on => {
     if (await $.fs.exists(STOP_FILE))
       return { deny: `taskforce: kill switch engaged (${STOP_FILE} exists). A human removes it to resume.` }
     if (e.tool === TOOL_FULL) return next(e)
+    if (await isPaused($)) return { deny: 'taskforce: đang tạm dừng (/tf resume để tiếp tục).' }
     const locked = await loadConfig($).then(c => c.locked, () => [] as string[])
     const path = WRITE_TOOLS.has(e.tool) ? String(e.file_path ?? e.notebook_path ?? '') : ''
     if (path && isProtectedPath(path, locked))
       return { deny: `taskforce: ${path} is protected (ledger, ${CONFIG_PATH} or a locked test). Use the tf tool for the ledger; locked tests are read-only.` }
     const command = String(e.command ?? '')
-    if (e.tool === 'Bash' && !isTrustedScriptCall(command, $.plugin.root) && bashTouchesProtected(command, locked))
+    if (e.tool === 'Bash' && !isTrustedScriptCall(command, $.plugin.root) && !isReadOnlyCommand(command) && bashTouchesProtected(command, locked))
       return { deny: 'taskforce: this command names a protected path (ledger, config or locked test). Read files with the Read tool; change the ledger with the tf tool.' }
     return next(e)
   }).catch(($, e, next) => (next.called ? next(e) : { deny: 'taskforce: guard failed; refusing to be safe.' }))
@@ -317,6 +338,8 @@ export const register: Register = on => {
       tab,
       rows: e.viewport?.rows ?? 30,
       setTab: (t: Tab) => void update($, tabAtom, () => t),
+      setPaused: (paused: boolean) => void setPaused($, paused).then(() => refreshBoard($)),
+      retryBlocked: () => void retryBlocked($).then(text => $.ui.toast(text)).then(() => refreshBoard($)),
     })
   })
 
@@ -329,7 +352,7 @@ export const register: Register = on => {
       inputSchema: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['status', 'next', 'report', 'add', 'stop', 'init'] },
+          action: { type: 'string', enum: ['status', 'next', 'report', 'add', 'stop', 'init', 'requeue'] },
           results: { type: 'array', items: { type: 'object' } },
           tasks: { type: 'array', items: { type: 'object' } },
           id: { type: 'string' },
@@ -338,7 +361,7 @@ export const register: Register = on => {
         required: ['action'],
       },
     })
-    await $.command.register({ name: 'tf', description: 'taskforce: ui | status | run | stop <id>', argumentHint: 'ui | status | run | stop <id>' })
+    await $.command.register({ name: 'tf', description: 'taskforce: mở dashboard (help · status · pause · resume · retry <id> · stop <id>)', argumentHint: 'help | status | pause | resume | retry <id> | stop <id>' })
     await refreshBoard($).catch(() => undefined)
     // ponytail: fixed 3s poll of two small files; switch to a file watch if one becomes available.
     $.clock.every(POLL_MS, () => void refreshBoard($).catch(() => undefined))
@@ -346,27 +369,36 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'tf' }, async ($, e) => {
-    const [sub = 'status', id] = e.args.trim().split(/\s+/)
+    const [sub = 'ui', id] = e.args.trim().split(/\s+/).filter(Boolean)
     try {
-      if (sub === 'status') return { text: statusText(await loadLedger($)) }
-      if (sub === 'stop') return { text: await runAction($, { action: 'stop', id }) }
-      if (sub === 'run') {
-        await loadConfig($)
-        await saveLedger($, requeueBuilding(await loadLedger($)))
-        // A command.run hook may not run another command (it would wait on the turn it holds), and a
-        // queued $.prompt.submit did not start the goal in a live session; so start /goal from a timer
-        // that fires after this hook has returned.
-        $.clock.after(300, () =>
-          void $.command.run({ command: 'goal', args: GOAL }).catch(err => $.ui.toast(`taskforce: could not start /goal: ${String(err)}`)),
-        )
-        return { text: 'taskforce: loop starting under /goal. /tf ui shows the dashboard; touch AGENT_STOP to halt everything.' }
+      switch (sub) {
+        case 'ui':
+        case 'help': {
+          if (sub === 'help') await update($, tabAtom, () => 'help' as Tab)
+          await refreshBoard($)
+          const { isPlaced } = await $.ui.open({ id: PANE, title: 'Taskforce' })
+          return { text: isPlaced ? 'taskforce: dashboard đã mở. Làm theo khung "Bước tiếp theo" ở trên cùng.' : 'taskforce: dashboard sẽ mở khi terminal đủ chỗ.' }
+        }
+        case 'status':
+          return { text: statusText(await loadLedger($)) }
+        case 'pause':
+          await setPaused($, true)
+          await refreshBoard($)
+          return { text: 'taskforce: ĐÃ TẠM DỪNG. Mọi agent bị chặn ở lần gọi tool kế tiếp. /tf resume để tiếp tục.' }
+        case 'resume':
+          await setPaused($, false)
+          await refreshBoard($)
+          return { text: 'taskforce: đã tiếp tục. Nếu vòng lặp đã dừng hẳn, gõ /taskforce:run.' }
+        case 'retry':
+          return { text: await retryBlocked($, id) }
+        case 'stop':
+          if (!id) return { text: 'usage: /tf stop <id>  (dừng hẳn 1 task). Dừng tất cả: /tf pause' }
+          return { text: await runAction($, { action: 'stop', id }) }
+        case 'run':
+          return { text: 'taskforce: gõ /taskforce:run để chạy (Claude làm hết các task đang chờ).' }
+        default:
+          return { text: 'Các lệnh: /tf (dashboard) · /tf help · /tf status · /tf pause · /tf resume · /tf retry <id|all> · /tf stop <id>\nCác bước: /taskforce:setup → /taskforce:plan <mô tả> → /taskforce:run' }
       }
-      if (sub === 'ui') {
-        await refreshBoard($)
-        const { isPlaced } = await $.ui.open({ id: PANE, title: 'Taskforce' })
-        return { text: isPlaced ? 'taskforce: dashboard opened (keys 1–4 switch tabs).' : 'taskforce: dashboard queued; it opens when the terminal has room.' }
-      }
-      return { text: 'usage: /tf ui | /tf status | /tf run | /tf stop <id>' }
     } catch (err) {
       return { text: `taskforce: ${String(err instanceof Error ? err.message : err)}` }
     }

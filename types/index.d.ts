@@ -53,10 +53,12 @@ export type MetricRow = {
   ms?: number
 }
 
-export type Tab = 'overview' | 'tasks' | 'agents' | 'flow'
+export type Tab = 'overview' | 'tasks' | 'agents' | 'flow' | 'help'
 
 export type Board = {
+  hasConfig: boolean
   hasLedger: boolean
+  paused: boolean
   repo: string
   tasks: Task[]
   events: MetricRow[]

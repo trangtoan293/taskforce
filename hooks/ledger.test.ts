@@ -4,11 +4,13 @@ import {
   claim,
   decideNext,
   isProtectedPath,
+  isReadOnlyCommand,
   isTrustedScriptCall,
   parseConfig,
   parseLedger,
   report,
   requeueBuilding,
+  retry,
   stop,
   type Ledger,
   type Task,
@@ -115,6 +117,13 @@ describe('recovery and stop', () => {
     expect(r.tasks[0]).toMatchObject({ status: 'pending', attempts: 1 })
   })
 
+  test('retry gives a blocked task a fresh set of attempts, keeping why it failed as a note', () => {
+    const r = retry(ledger(task('a', { status: 'blocked', attempts: 3, lastError: 'boom' })), 'a')
+    expect(r.tasks[0]).toMatchObject({ status: 'pending', attempts: 0, notes: 'previous block: boom' })
+    expect(r.tasks[0].lastError).toBeUndefined()
+    expect(() => retry(ledger(task('a')), 'a')).toThrow('blocked')
+  })
+
   test('stop blocks any task that is not merged', () => {
     expect(statusOf(stop(ledger(task('a', { status: 'building' })), 'a'), 'a')).toBe('blocked')
     expect(() => stop(ledger(task('a', { status: 'merged' })), 'a')).toThrow('merged')
@@ -141,6 +150,13 @@ describe('guard matching', () => {
     expect(isTrustedScriptCall(`${gate} && echo`, root)).toBe(false)
     expect(isTrustedScriptCall(`bash '/elsewhere/scripts/tf-gate.sh' 'x'`, root)).toBe(false)
     expect(isTrustedScriptCall(`bash '/p/taskforce/scripts/evil.sh' 'x'`, root)).toBe(false)
+  })
+
+  test('bash: read-only commands may name protected paths, anything that can write may not', () => {
+    const ro = ['grep -n x taskforce.json', 'cat .taskforce/tasks.json | head -5', 'git diff develop -- tests/locked', 'ls .taskforce && wc -l .taskforce/metrics.jsonl', 'find tests/locked -name "*.py"', 'cat taskforce.json 2>&1']
+    for (const c of ro) expect(isReadOnlyCommand(c)).toBe(true)
+    const rw = ['echo x > taskforce.json', 'sed -i s/a/b/ tests/locked/x.py', 'cat a | tee .taskforce/tasks.json', 'python3 fix.py taskforce.json', 'cp x tests/locked/y', 'git checkout -- tests/locked', 'find tests/locked -delete', 'cat $(echo taskforce.json)', 'rm .taskforce/tasks.json']
+    for (const c of rw) expect(isReadOnlyCommand(c)).toBe(false)
   })
 
   test('bash: flags commands naming protected paths, lets normal ones through', () => {

@@ -141,6 +141,13 @@ export function requeueBuilding(l: Ledger): Ledger {
   }
 }
 
+export function retry(l: Ledger, id: string): Ledger {
+  const t = find(l, id)
+  expect(t, 'blocked')
+  const { lastError, ...rest } = t
+  return replace(l, { ...rest, status: 'pending', attempts: 0, notes: `previous block: ${lastError ?? 'unknown'}` })
+}
+
 export function stop(l: Ledger, id: string): Ledger {
   const t = find(l, id)
   if (t.status === 'merged') throw new Error(`task "${id}" is already merged`)
@@ -180,6 +187,26 @@ export function isTrustedScriptCall(command: string, root: string): boolean {
   const arg = `'(?:[^']|'\\\\'')*'`
   const script = `'${escape(root)}/scripts/tf-(?:gate|merge)\\.sh'`
   return new RegExp(`^bash ${script}(?: (?:${arg}|--))*$`).test(command.trim())
+}
+
+// A pipeline of known readers with no redirection or substitution cannot write, so it may name
+// protected paths. Anything else that names one is refused (see bashTouchesProtected).
+const READERS = new Set(['cat', 'grep', 'rg', 'ls', 'head', 'tail', 'wc', 'less', 'file', 'stat', 'diff', 'jq', 'tree', 'echo', 'sort', 'uniq', 'cut', 'awk'])
+const GIT_READERS = new Set(['diff', 'log', 'show', 'status', 'blame', 'grep', 'ls-files', 'rev-parse', 'branch'])
+
+export function isReadOnlyCommand(command: string): boolean {
+  const cmd = command.replace(/\b2>&1\b/g, '').replace(/[12]?>\s*\/dev\/null/g, '')
+  if (/[>`]|\$\(|<\(/.test(cmd)) return false
+  return cmd.split(/\|\||&&|[|;]/).every(segment => {
+    const words = segment.trim().split(/\s+/).filter(Boolean)
+    const [head, sub] = words
+    if (!head) return true
+    if (head === 'git') return GIT_READERS.has(sub ?? '') && !words.includes('-D') && !words.includes('--delete')
+    if (head === 'find') return !words.some(w => /^-(delete|exec|execdir|ok|fprint)/.test(w))
+    if (head === 'sed') return !words.some(w => w.startsWith('-i'))
+    if (head === 'awk') return !/system\(|print\s*>/.test(segment)
+    return READERS.has(head)
+  })
 }
 
 // ponytail: substring match on the command text; `${f}`-style spellings slip past.

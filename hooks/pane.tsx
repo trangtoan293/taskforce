@@ -3,18 +3,28 @@
 import type { AgentRec, Board, MetricRow, Tab, Task } from '../types'
 import { agentTree, overallProgress, taskProgress, totals, type Node } from './telemetry'
 import { bar, clock, dur, fmtTok, pad } from './format'
+import { STEP_NAMES, nextStep, type Guide } from './guide'
 
 // ponytail: loose element typing; the engine validates every tree it is handed.
 type El = (props: Record<string, unknown>, ...children: unknown[]) => unknown
 type Elements = { Box: El; Text: El; Button: El }
 
-type Props = { agents: AgentRec[]; board: Board; tab: Tab; rows: number; setTab: (t: Tab) => void }
+type Props = {
+  agents: AgentRec[]
+  board: Board
+  tab: Tab
+  rows: number
+  setTab: (t: Tab) => void
+  setPaused: (paused: boolean) => void
+  retryBlocked: () => void
+}
 
 const TABS: [Tab, string, string][] = [
   ['overview', '1', 'Tổng quan'],
   ['tasks', '2', 'Task'],
   ['agents', '3', 'Agent'],
   ['flow', '4', 'Luồng'],
+  ['help', '5', 'Hướng dẫn'],
 ]
 const STEPS = ['chờ', 'build', 'cổng', 'chờ merge', 'xong']
 const STATUS: Record<Task['status'], { color: string; icon: string; label: string }> = {
@@ -23,6 +33,19 @@ const STATUS: Record<Task['status'], { color: string; icon: string; label: strin
   ready: { color: 'suggestion', icon: '◑', label: 'chờ merge' },
   merged: { color: 'success', icon: '●', label: 'xong' },
   blocked: { color: 'error', icon: '✕', label: 'blocked' },
+}
+const TONE: Record<Guide['tone'], { color: string; icon: string }> = {
+  action: { color: 'claude', icon: '▶' },
+  wait: { color: 'suggestion', icon: '◷' },
+  warn: { color: 'warning', icon: '!' },
+  done: { color: 'success', icon: '✓' },
+}
+const HELP_STATUS: Record<Task['status'], string> = {
+  pending: 'đã duyệt, đang chờ tới lượt',
+  building: 'agent đang làm hoặc đang qua cổng kiểm tra',
+  ready: 'qua hết cổng, chờ gộp vào nhánh tích hợp',
+  merged: 'đã gộp, xong',
+  blocked: 'dừng lại chờ anh quyết định (xem lý do)',
 }
 const ROLE: Record<AgentRec['role'], { color: string; label: string }> = {
   main: { color: 'claude', label: 'master' },
@@ -74,27 +97,104 @@ export function renderPane({ Box, Text, Button }: Elements, p: Props) {
   )
 
   const footer = (
-    <Text dimColor>  1–4 chuyển tab · /tf run chạy vòng lặp · /tf stop &lt;id&gt; dừng 1 task · touch AGENT_STOP dừng tất cả</Text>
+    <Text dimColor>  phím 1–5 chuyển tab · X tạm dừng · C tiếp tục · T chạy lại task blocked · /tf help xem hướng dẫn</Text>
+  )
+
+  // The one thing to do now, always on top.
+  const g = nextStep(board, agents)
+  const tone = TONE[g.tone]
+  const guide = (
+    <Box flexDirection="column" borderStyle="round" borderColor={tone.color} paddingX={1}>
+      <Text>
+        {STEP_NAMES.map((name, i) => (
+          <Text>
+            {i ? <Text dimColor> ─ </Text> : null}
+            <Text color={i + 1 < g.step ? 'success' : i + 1 === g.step ? tone.color : 'subtle'} bold={i + 1 === g.step}>
+              {i + 1 < g.step ? '✓' : String(i + 1)} {name}
+            </Text>
+          </Text>
+        ))}
+      </Text>
+      <Text bold color={tone.color}>{tone.icon} BƯỚC TIẾP THEO: {g.title}</Text>
+      <Text>{g.doThis}</Text>
+      {g.command ? <Text>Gõ vào ô chat: <Text bold inverse color={tone.color}>{` ${g.command} `}</Text></Text> : null}
+    </Box>
+  )
+
+  const blockedCount = board.tasks.filter(x => x.status === 'blocked').length
+  const actions = (
+    <Box flexDirection="row" gap={2} paddingX={1}>
+      {board.paused
+        ? <Button key="act-resume" hotkey="c" onPress={() => p.setPaused(false)}><Text bold color="success">[C] Tiếp tục</Text></Button>
+        : <Button key="act-pause" hotkey="x" onPress={() => p.setPaused(true)}><Text color="warning">[X] Tạm dừng tất cả</Text></Button>}
+      {blockedCount
+        ? <Button key="act-retry" hotkey="t" onPress={() => p.retryBlocked()}><Text color="error">[T] Chạy lại {blockedCount} task blocked</Text></Button>
+        : null}
+    </Box>
   )
 
   if (!board.hasLedger)
     return (
       <Box flexDirection="column">
         {header}
-        {card('Chưa có ledger', 'subtle', <Text dimColor>Mở Claude Code trong repo có taskforce.json, hoặc dùng tf action "init".</Text>)}
+        {guide}
+        {helpTab()}
         {footer}
       </Box>
     )
 
-  const body = p.tab === 'tasks' ? tasksTab() : p.tab === 'agents' ? agentsTab() : p.tab === 'flow' ? flowTab() : overviewTab()
+  const body =
+    p.tab === 'tasks' ? tasksTab() : p.tab === 'agents' ? agentsTab() : p.tab === 'flow' ? flowTab() : p.tab === 'help' ? helpTab() : overviewTab()
   return (
     <Box flexDirection="column">
       {header}
+      {guide}
+      {actions}
       {tabs}
       {body}
       {footer}
     </Box>
   )
+
+  function helpTab() {
+    const steps: [string, string, string][] = [
+      ['/taskforce:setup', 'Cài đặt (1 lần cho mỗi repo)', 'Claude tìm lệnh build/test của repo, đề xuất cổng kiểm tra và các file cần khoá. Anh duyệt thì mới lưu.'],
+      ['/taskforce:plan <mô tả>', 'Lên kế hoạch', 'Anh mô tả việc bằng lời thường. Claude chia thành task nhỏ, mỗi task có tiêu chí hoàn thành rõ ràng. Anh duyệt thì mới thêm.'],
+      ['/taskforce:run', 'Chạy', 'Nhiều agent làm song song; mỗi task qua cổng kiểm tra rồi mới gộp vào nhánh tích hợp. Bị ngắt thì gõ lại để chạy tiếp.'],
+      ['/tf', 'Theo dõi và duyệt', 'Xem tiến độ ở đây. Task blocked có lý do ở tab Task: sửa được thì /tf retry <id>. Cuối cùng anh tự merge nhánh tích hợp lên nhánh chính.'],
+    ]
+    return (
+      <Box flexDirection="column">
+        {card('Cách dùng: 4 bước', 'claude', (
+          <Box flexDirection="column" gap={1}>
+            {steps.map(([cmd, name, what], i) => (
+              <Box flexDirection="column">
+                <Text><Text bold color="claude">{i + 1}. {name}</Text>  <Text inverse>{` ${cmd} `}</Text></Text>
+                <Text>   {what}</Text>
+              </Box>
+            ))}
+          </Box>
+        ))}
+        <Box flexDirection="row">
+          {card('Trạng thái task', 'subtle', (
+            <Box flexDirection="column">
+              {(['pending', 'building', 'ready', 'merged', 'blocked'] as const).map(st => (
+                <Text><Text color={STATUS[st].color}>{STATUS[st].icon} {pad(STATUS[st].label, 10)}</Text><Text dimColor>{HELP_STATUS[st]}</Text></Text>
+              ))}
+            </Box>
+          ), '55%')}
+          {card('Khi cần dừng', 'warning', (
+            <Box flexDirection="column">
+              <Text><Text bold>/tf pause</Text> <Text dimColor>chặn mọi agent ngay</Text></Text>
+              <Text><Text bold>/tf resume</Text> <Text dimColor>cho chạy tiếp</Text></Text>
+              <Text><Text bold>/tf stop &lt;id&gt;</Text> <Text dimColor>bỏ 1 task</Text></Text>
+              <Text><Text bold>/tf retry &lt;id&gt;</Text> <Text dimColor>chạy lại task blocked</Text></Text>
+            </Box>
+          ))}
+        </Box>
+      </Box>
+    )
+  }
 
   function taskRow(task: Task) {
     const pr = taskProgress(task, agents)
