@@ -52,7 +52,9 @@ test('tf: add → next claims and hands over the workflow → report pass → ne
   expect(JSON.parse(files['.taskforce/tasks.json']).tasks[0].status).toBe('building')
 
   await $.tool.call(tf({ action: 'report', results: [{ id: 'a', outcome: 'pass', branch: 'tf/a' }] }))
-  expect(String((await $.tool.call(tf({ action: 'next' }))).result)).toStartWith('TF-MERGE')
+  const merge = String((await $.tool.call(tf({ action: 'next' }))).result)
+  expect(merge).toStartWith('TF-MERGE')
+  expect(merge).toContain("scripts/tf-merge.sh' '/repo' 'develop' 'a:tf/a' -- 'test=python -m unittest'")
 
   await $.tool.call(tf({ action: 'report', results: [{ id: 'a', outcome: 'merged' }] }))
   expect(String((await $.tool.call(tf({ action: 'next' }))).result)).toStartWith('TF-DONE')

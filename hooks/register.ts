@@ -83,8 +83,18 @@ const forWorkflow = (t: Task) => ({
   notes: t.notes ?? '',
 })
 
-function buildText(tasks: Task[], cfg: Config, repo: string): string {
-  const args = { repo, base: cfg.base, gates: cfg.gates, locked: cfg.locked, tasks: tasks.map(forWorkflow) }
+const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
+const gateSpecs = (cfg: Config) => Object.entries(cfg.gates).map(([n, c]) => sq(`${n}=${c}`)).join(' ')
+
+function buildText(tasks: Task[], cfg: Config, repo: string, root: string): string {
+  const args = {
+    repo,
+    base: cfg.base,
+    gates: cfg.gates,
+    locked: cfg.locked,
+    gateScript: `${root}/scripts/tf-gate.sh`,
+    tasks: tasks.map(forWorkflow),
+  }
   return [
     `TF-BUILD: ${tasks.map(t => t.id).join(', ')} are now building.`,
     `Call the Workflow tool with name "${WORKFLOW}" and exactly these args:`,
@@ -93,18 +103,14 @@ function buildText(tasks: Task[], cfg: Config, repo: string): string {
   ].join('\n')
 }
 
-function mergeText(tasks: Task[], cfg: Config): string {
-  const gates = Object.entries(cfg.gates).map(([n, c]) => `   - ${n}: ${c}`).join('\n')
-  const order = tasks.map(t => `${t.id} (${t.branch ?? `tf/${t.id}`})`).join(', ')
+// The script merges, re-runs the gates and rolls back by exit code; the model only relays its JSON.
+function mergeText(tasks: Task[], cfg: Config, repo: string, root: string): string {
+  const pairs = tasks.map(t => sq(`${t.id}:${t.branch ?? `tf/${t.id}`}`)).join(' ')
+  const cmd = `bash ${sq(`${root}/scripts/tf-merge.sh`)} ${sq(repo)} ${sq(cfg.base)} ${pairs} -- ${gateSpecs(cfg)}`
   return [
-    `TF-MERGE: merge these ready branches into ${cfg.base}, one at a time, in this order: ${order}.`,
-    `First check \`git status --porcelain\` is empty and the current branch is ${cfg.base}; if not, stop and tell the user.`,
-    'For each task:',
-    '1. git merge --no-ff <branch> -m "tf(<id>): <title>". On conflict: git merge --abort, then report outcome "merge-fail" with the conflicting files as error.',
-    `2. From the repo root run every gate:\n${gates}`,
-    `3. All pass: report {id, outcome: "merged"}, then git worktree remove --force ${WORKTREE_DIR}/<id>.`,
-    '   Any fail: git reset --hard ORIG_HEAD, then report {id, outcome: "merge-fail", error: "<gate>: <last 40 lines>"}.',
-    'Report each task with tf action "report" as soon as it is settled, then call tf action "next".',
+    `TF-MERGE: ${tasks.map(t => t.id).join(', ')} are ready. Run exactly this one Bash command (do not edit or pipe it):`,
+    cmd,
+    'It prints a JSON array. Call tf with action "report" and "results" set to that array, unchanged. Then call tf action "next".',
   ].join('\n')
 }
 
@@ -156,11 +162,11 @@ async function runAction($: $, input: TfInput): Promise<string> {
       const cfg = await loadConfig($)
       const l = await loadLedger($)
       const d = decideNext(l, cfg)
-      if (d.kind === 'merge') return mergeText(d.tasks, cfg)
+      if (d.kind === 'merge') return mergeText(d.tasks, cfg, await repoRoot($), $.plugin.root)
       if (d.kind === 'build') {
         await saveLedger($, d.ledger)
         await logMetric($, { event: 'claim', tasks: d.tasks.map(t => t.id) })
-        return buildText(d.tasks, cfg, await repoRoot($))
+        return buildText(d.tasks, cfg, await repoRoot($), $.plugin.root)
       }
       return doneText(l, d.blocked, d.stuck)
     }

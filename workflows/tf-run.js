@@ -35,7 +35,7 @@ const GATE = {
   required: ['pass', 'failures'],
 }
 
-const { repo, base, gates, locked = [], tasks } = args
+const { repo, base, gates, locked = [], gateScript, tasks } = args
 const gateList = Object.entries(gates).map(([name, cmd]) => `- ${name}: ${cmd}`).join('\n')
 const lockedList = locked.length ? locked.map(g => `- ${g}`).join('\n') : '- (none)'
 const wt = t => `${repo}/.tf-worktrees/${t.id}`
@@ -47,7 +47,8 @@ const buildPrompt = t => `You are the builder for one task in ${repo}. Work only
 - If ${wt(t)} does not exist:
   - if branch ${branch(t)} exists: git -C ${repo} worktree add .tf-worktrees/${t.id} ${branch(t)}
   - else: git -C ${repo} worktree add .tf-worktrees/${t.id} -b ${branch(t)} ${base}
-- Then inside the worktree: git rebase ${base} (abort and continue from the current state if it conflicts).
+- Then inside the worktree: git rebase ${base}. If it conflicts, resolve each conflict so both the
+  ${base} change and this task's change survive, then git add and git rebase --continue.
 
 # Before coding
 Read ${wt(t)}/CLAUDE.md if it exists, and run git -C ${wt(t)} log --oneline -5.
@@ -73,19 +74,16 @@ ${t.notes ? `\nNotes from the previous attempt:\n${t.notes}` : ''}
 
 Return status "done" with branch "${branch(t)}" and a summary mapping each acceptance criterion to the test that covers it.`
 
-const gatePrompt = t => `You are a gate runner. Do not edit, fix or commit anything. Only run commands and report.
-Worktree: ${wt(t)}  (branch ${branch(t)}, base ${base})
+const sq = s => `'${String(s).replace(/'/g, `'\\''`)}'`
+const gateCommand = t =>
+  ['bash', sq(gateScript), sq(wt(t)), sq(base), ...locked.map(sq), '--',
+    ...Object.entries(gates).map(([n, c]) => sq(`${n}=${c}`))].join(' ')
 
-1. Run each gate from inside the worktree and record its exit code:
-${gateList}
-   For each non-zero exit, add a failure {gate: <name>, output: <last 40 lines of its output>}.
-2. Run: git -C ${wt(t)} status --porcelain
-   Any output → failure {gate: "uncommitted", output: <that output>}.
-3. Run: git -C ${wt(t)} diff --name-only ${base}...HEAD
-   Any listed file that matches one of these globs, or is under .taskforce/ or is taskforce.json → failure {gate: "locked", output: <those files>}:
-${lockedList}
-
-pass is true only when there are no failures. Report outputs verbatim, trimmed to the relevant lines.`
+// The script decides pass/fail by exit codes and git; this agent only runs it and relays the JSON.
+const gatePrompt = t => `You are a gate runner. Do not edit, fix or commit anything.
+Run exactly this one Bash command, unmodified and unpiped:
+${gateCommand(t)}
+It prints one JSON object {"pass": ..., "failures": [...]}. Return that object exactly as printed.`
 
 const results = await pipeline(
   tasks,
