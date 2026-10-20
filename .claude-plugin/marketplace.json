@@ -1,0 +1,14 @@
+{
+  "name": "taskforce",
+  "owner": {
+    "name": "trangtoan293"
+  },
+  "description": "taskforce: long-running multi-agent feature work for Claude Code",
+  "plugins": [
+    {
+      "name": "taskforce",
+      "source": "./",
+      "description": "Long-running feature work for Claude Code: task ledger, exit-code DoD gates, guards, live dashboard, master/subagent orchestration"
+    }
+  ]
+}

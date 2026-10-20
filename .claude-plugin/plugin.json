@@ -1,9 +1,10 @@
 {
   "name": "taskforce",
-  "version": "0.2.0",
-  "description": "Long-running multi-agent feature work with ledger, DoD gates and guards",
+  "version": "0.3.0",
+  "description": "Long-running feature work for Claude Code: task ledger, exit-code DoD gates, guards, live dashboard, master/subagent orchestration",
   "author": {
     "name": "toantrang"
   },
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "repository": "https://github.com/trangtoan293/taskforce"
 }
